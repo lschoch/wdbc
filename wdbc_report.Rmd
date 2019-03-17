@@ -22,8 +22,12 @@ if(!require(caretEnsemble)) install.packages("caretEnsemble", dependencies = TRU
 if(!require(captioner)) install.packages("captioner", repos = "http://cran.us.r-project.org")
 if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
 
-# read the data file from Google Drive and store it in a data frame - wdbc.data
-wdbc_data <- read.csv(file = "https://drive.google.com/uc?export=download&id=1suhP_ATOyeiQVMGmWyEudF5JZNFnmVTC",
+# # read the data file from Google Drive and store it in a data frame - wdbc.data
+# wdbc_data <- read.csv(file = "https://drive.google.com/uc?export=download&id=1suhP_ATOyeiQVMGmWyEudF5JZNFnmVTC",
+#                       header = FALSE, sep = ",")
+
+# read the data file from the GitHub repository
+wdbc_data <- read.csv(file = "https://raw.githubusercontent.com/lschoch/wdbc/master/wdbc.data.csv",
                       header = FALSE, sep = ",")
 # add column names
 names(wdbc_data) <- c("ID", "diagnosis", "radius", "texture", "perimeter", "area", "smoothness",
