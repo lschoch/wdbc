@@ -1,0 +1,354 @@
+---
+title: "Breast Cancer Detection By Fine Needle Aspiration"
+subtitle: "Machine Learning Algorithms Using Ensembled Models to Detect Malignancy"
+author: "L. Schoch, MD"
+date: "3/1/2019"
+output: 
+  pdf_document:
+    fig_caption: true
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, message = FALSE, warning = FALSE, cache = TRUE, autodep=TRUE, fig.align = "center", fig.height = 3.75, fig.width = 4)
+```
+
+```{r build-data}
+# check to see if the required packages are installed and if not, install them
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(caretEnsemble)) install.packages("caretEnsemble", dependencies = TRUE,
+                                             repos = "http://cran.us.r-project.org")
+if(!require(captioner)) install.packages("captioner", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+
+# read the data file from Google Drive and store it in a data frame - wdbc.data
+wdbc_data <- read.csv(file = "https://drive.google.com/uc?export=download&id=1suhP_ATOyeiQVMGmWyEudF5JZNFnmVTC",
+                      header = FALSE, sep = ",")
+# add column names
+names(wdbc_data) <- c("ID", "diagnosis", "radius", "texture", "perimeter", "area", "smoothness",
+                      "compactness", "concavity", "concave_points", "symmetry", "fractal_dimension",
+                      "radius_se", "texture_se", "perimeter_se", "area_se", "smoothness_se", "compactness_se",
+                      "concavity_se", "concave_points_se", "symmetry_se", "fractal_dimension_se",
+                      "radius_worst", "texture_worst", "perimeter_worst", "area_worst", "smoothness_worst",
+                      "compactness_worst", "concavity_worst", "concave_points_worst", "symmetry_worst",
+                      "fractal_dimension_worst")
+# reorder diagnosis levels so that "M" will be the positive value
+levels(wdbc_data$diagnosis) = c("M", "B")
+```
+
+```{r captioner_setup, results="hide"}
+# set up figure captions using the captioner package
+figs <- captioner::captioner()
+figs("diagnosis", "Diagnosis - class imbalance.")
+figs("corrplot", "Correlation plot of predictor variables.")
+figs("scree", "Cumulative proportion of variance.")
+
+# set up table captions using the captioner package
+tabls <- captioner::captioner(prefix = "Table")
+tabls("accs", "Model accuracy for each resample.")
+tabls("avg-accs", "Average model accuracy with and without pca.")
+tabls("ensemble", "Ensemble accuracy with and without pca.")
+tabls("accs-mods+ens", "Average accuracy for each model and the ensemble.")
+```
+
+## Introduction
+Breast cancer is the most common cancer diagnosed among U.S. women (excluding skin cancers) - about 252,710 new cases were expected to be diagnosed in 2017. It is the second leading cause of cancer death among women in the U.S., after lung cancer, and 40,610 women in the U.S. were expected to die from this disease in 2017.[3]  As with cancer in general, early diagnosis and intervention are key to long term survival. Currently, early diagnosis is best achieved by screening mammography and fine needle aspiration biopsy of  detected lesions. This paper presents results of efforts to develop a machine learning algorithm that accurately discriminates between malignant and benign lesions using the Wisconsin Diagnostic Breast Cancer (WDBC) data set. This data set has been widely used for this purpose and accuracies approaching 100% have been achieved in the past.[1][5] 
+
+## Data Exploration and Analysis
+The Wisconsin Diagnostic Breast Cancer data set contains the data from a series of fine needle aspiration breast biopsies performed by Dr. William Wolberg, physician at the University of Wisconsin Hospital in Madison, Wisconsin, USA. It was donated in 1992 and is available to the public on the University of California Irvine Machine Learning Data Repository.[4]. To create the dataset Dr. Wolberg used fluid samples, taken from patients with solid breast masses, and an easy-to-use graphical computer program called Xcyt, which evaluates characteristics of cell nuclei present on a digital image. The dataset consists of `r dim(wdbc_data)[1]` biopsies and there are `r dim(wdbc_data)[2]` variables for each biopsy. Variables include a unique patient identifier and the target variable, diagnosis, a binary classifier with values of *B* (benign) or *M* (malignant). An additional 30 variables are obtained as follows bringing the total 32:
+
+Ten real-valued variables are computed for each cell nucleus using the Xcyt software:  
+  1. radius (mean of distances from center to points on the perimeter)  
+  2. texture (standard deviation of gray-scale values)  
+  3. perimeter  
+  4. area  
+  5. smoothness (local variation in radius lengths)  
+  6. compactness (perimeter^2^/area - 1.0)  
+  7. concavity (severity of concave portions of the contour)  
+  8. concave points (number of concave portions of the contour)  
+  9. symmetry  
+  10. fractal dimension ("coastline approximation" - 1)  
+	
+The mean, standard error, and "worst" or largest (mean of the three largest values) of these variables are computed for each image, resulting in 30 variables. For instance variable 3 is mean radius, variable 13 is radius standard error (se) and variable 23 is worst radius. 
+
+\newpage
+
+As a first step in data exploration it is helpful to get an overview with the ```glimpse``` function: 
+
+```{r glimpse, comment=NA}
+glimpse(wdbc_data) 
+```
+&nbsp;
+
+We can use the ```anyNA``` function to show that there are no missing values in our data set (wdbc_data): 
+
+```{r missing-values, comment=NA, echo=TRUE}
+anyNA(wdbc_data)
+```
+&nbsp;
+
+Since this is a binary classification problem we need to evaluate the degree, if any, of imbalance in our target variable, diagnosis. Of the `r dim(wdbc_data)[1]` biopsies in our dataset, `r sum(wdbc_data$diagnosis == "M")` (`r round(100*sum(wdbc_data$diagnosis == "M")/dim(wdbc_data)[1],digits=1)`%) are malignant - so there *is* class imbalance (also shown graphically in `r figs("diagnosis", display = "cite")`); however, since our goal is to detect malignancy and malignancy is the majority class, we do not need to concern ourselves with techniques for dealing with class imbalance such as cost-sensitive learning or sampling (oversampling the minority class or undersampling the majority class). (From <https://towardsdatascience.com/dealing-with-imbalanced-classes-in-machine-learning-d43d6fa19d2>)
+
+```{r diagnosis-barplot, fig.height=2.5, fig.width=2.5}
+# barplot of diagnosis
+wdbc_data %>% ggplot(aes(diagnosis)) + geom_bar(fill="light green") + coord_cartesian(ylim = c(0, 400)) + geom_text(stat='count',aes(label=..count..),vjust=-1)
+```
+\begin{center} `r figs("diagnosis")` \end{center}
+&nbsp; 
+
+```{r corrplot, echo=FALSE, fig.width=6, fig.height=6}
+# correlation plot
+corrplot(cor(wdbc_data[ ,3:32]), method = "square")
+```
+
+\begin{center} `r figs("corrplot")` \end{center}
+&nbsp; 
+
+The degree of correlation between predictor variables is an important consideration in predictive modeling. `r figs("corrplot", display = "cite")` is a correlation plot for the 30 predictor variables in our WDBC dataset and it does show some areas of potential concern. Simple geometry leads us to expect high correlation between radius, area and perimeter and this is confirmed in `r figs("corrplot", display = "cite")`. There is also high correltation between radius, area and perimeter and their corresponding "worst" categories, again, not unexpected. Finally, there is significant correlation between compactness, concavity and concave points and their corresponding "worst" categories. 
+
+Let's investigate our predictor variables further with principal component analysis (pca). Briefly, principal component analysis creates a set of linearly uncorrelated numeric variables - principal components - from a set of possibly correlated numeric variables using an orthogonal transformation. This transformation is defined in such a way that the first principal component accounts for as much of the variability in the data as possible, and each succeeding component, in turn, has the next highest variance possible under the constraint that it is orthogonal to the preceding components. If there are *n* observations with *p* variables, the number of distinct principal components is the lesser of *n-1* or *p*. (From <https://en.wikipedia.org/wiki/Principal_component_analysis>)  Thus the number of principal components for our data is the number of numeric predictor variables, 30.
+
+```{r pca}
+# create the principal components
+prin_comp <- prcomp(wdbc_data[ ,3:32], scale=TRUE)
+# compute the standard deviation of each principal component
+std_dev <- prin_comp$sdev
+#compute the variance of each principal component
+var <- std_dev^2
+#compute the proportion of variance 
+prop_var <- var/sum(var)
+```
+
+`r figs("scree", display = "cite")` is a plot of the cumulative proportion of variance explained by the successive principal components of our data. As expected, the first component accounts for the largest variance (`r round(100*prop_var[1],digits=1)`%). `r round(100*cumsum(prop_var)[10],digits=1)`% of the variance is explained by the first 10 components. Thus, principal component analysis of the WDBC data reveals that feature selection may be indicated when we develop our model. Fortunately, the caretEnsemble functions have pca built-in as a pre-processing option.  
+\hfill\break
+\hfill\break
+\hfill\break
+
+```{r scree, fig.height=5, fig.width=5}
+#cumulative scree plot
+plot(cumsum(prop_var), xlab = "Principal Component",
+    ylab = "Cumulative Variance",
+    type = "b")
+```
+\begin{center} `r figs("scree")` \end{center}
+&nbsp;
+
+## Methods
+The data were partitioned, 80% as a training set and 20% as a test set. Then, functions from the caretEnsemble package were used to create ensembles of models. The ```caretList``` function was used to train a list of six models: ```lda```, ```rpart```, ```knn```, ```svmRadial```, ```Rborist```, and ```nnet```. The default training parameters were used and normalization of the 30 predictor variables was done as part of the pre-processing. The effect of principal component analysis was tested using the ```pca``` pre-processing option.  
+
+The ```caretEnsemble``` function uses a ```glm``` to create a simple linear blend of models. Two ensembles were created with this function: one using the models that were trained without principal component analysis and the second using the models that were trained with principal component analysis. 
+
+Training of the models and ensembles was done with repeated cross validation, 30 folds repeated three times. The number 30 was chosen to produce enough resamples for meaningful p-value calculations. 
+
+```{r create-ensembles, results="hide"}
+# partition the data, 80% as train_set and 20% as test_set
+set.seed(2019)
+partition_index <- createDataPartition(y = wdbc_data$diagnosis, times = 1, p = 0.2, list = FALSE)
+train_set <- wdbc_data[-partition_index, ]
+test_set <- wdbc_data[partition_index, ]
+
+# create the target and predictors datasets
+y <- train_set$diagnosis # target set
+x <- train_set[ ,3:32] # predictors set
+
+# create a list of models
+model_list <- c('lda', 'rpart', 'knn', 'svmRadial', 'Rborist','nnet')
+
+# train the list of models using the caretList function
+control <- trainControl(method="repeatedcv", 
+                        number=30,
+                        index=createResample(y, 30),
+                        repeats=3, 
+                        savePredictions='final', 
+                        classProbs=TRUE)
+set.seed(2019)
+models <- caretList(x,y,
+                    trControl=control,
+                    methodList=model_list,
+                    preProcess = c('center','scale'))
+# get results by resampling the models
+results <- resamples(models)
+
+# train the list of models using pca
+set.seed(2019)
+models_pca <- caretList(x,y,
+                    trControl=control,
+                    methodList=model_list,
+                    preProcess = c('center','scale','pca'))
+# get results by resampling the models
+results_pca <- resamples(models_pca)
+```
+
+## Results
+
+```{r}
+# create an object to contain the accuracy columns of the results object and round to 4 digits
+res <- round(results$values[ ,seq(2,12,2)], digits = 4)
+# rename the columns
+names(res) <- model_list
+# create an object to contain the accuracy columns of the results_pca object and round to 4 digits
+res_pca <- round(results_pca$values[ ,seq(2,12,2)], digits = 4)
+# rename the columns
+names(res_pca) <- model_list
+```
+
+`r tabls("accs", display = "cite")` shows the accuracies obtained by each of the six models in each of the 30 resamples. Values range from a low of `r min(res)` to a high of `r max(res)`. On visual inspection, ```svmRadial``` appears to be the top performer.
+&nbsp;  
+
+```{r}
+knitr::kable(res, align = 'c')
+```
+
+\begin{center} `r tabls("accs")` \end{center}
+
+```{r}
+# obtain the average accuracy and sd for each model that was computed without pca
+res_new <- data.frame(round(colMeans(res), digits = 4)) %>%  # calculate avg accuracy for each model
+  rownames_to_column("model") %>% # create a column for model
+  mutate('sd_nopca' = round(apply(res, 2, sd), digits = 4)) # add a column for standard deviation
+names(res_new) <- c("model", "avg_nopca", "sd_nopca") # rename the columns
+
+# obtain the average accuracy and sd for each model that was computed with pca
+res_pca_new <- data.frame(round(colMeans(res_pca), digits = 4)) %>%  # calculate avg accuracy for each model
+  rownames_to_column("model") %>% # create a column for model
+  mutate('sd_pca' = round(apply(res_pca, 2, sd), digits = 4)) # add a column for standard deviation
+names(res_pca_new) <- c("model", "avg_pca", "sd_pca") # rename the columns
+
+# combine res_new and res_pca_new (building a table to be printed by the kable function)
+res_combined <- res_new %>% left_join(res_pca_new, by = 'model')
+
+# rename columns of res_pca so they won't match column names of res
+names(res_pca) <- c("lda_pca", "rpart_pca", "knn_pca", "svmRadial_pca", "Rborist_pca", "nnet_pca")
+# combine res and res_pca to calculate p values
+res_p <- cbind(res, res_pca)
+#calculate the vector of p values
+dat <- seq(1, 6) # to select colums in res_p for t.test
+p_vals <- sapply(dat, function(d) {
+  pv <- t.test(res_p[ , d], res_p[ , d+6], paired = TRUE)$p.value 
+  return(round(pv, digits = 3))
+})
+# add p values as a column in res_combined
+res_combined <- res_combined %>% mutate("p_val" = p_vals)
+# select the columns for the table to be printed by the kable function
+res_combined_kable <- res_combined %>% select(-sd_nopca, -sd_pca)
+# create character vector to name columns in printed table
+col_names <- c("model", "accuracy-no pca", "accuracy-pca", "p-value")
+
+# evaluate effect size (Cohen's d) for svmRadial and Rborist (p-values were < 0.05)
+# create function to calculate Cohen's d
+cohenD <- function(x,y) {
+  lx <- length(x) - 1
+  ly <- length(y) - 1
+  md <- abs(mean(x) - mean(y))
+  csd <- lx*var(x) + ly*var(y)
+  csd <- csd/((lx + ly))
+  csd <- sqrt(csd)
+  return(md/csd)
+}
+# calculate effect size
+svm_cohend <- round(cohenD(res$svmRadial, res_pca$svmRadial_pca), digits = 3)
+Rbor_cohend <- round(cohenD(res$Rborist, res_pca$Rborist_pca), digits = 3)
+```
+
+The models were also trained using principal component analysis for the potential advantages of decreased complexity, decreased processing time and decreased risk of overfitting. `r tabls('avg-accs', display = "cite")` compares the accuracy averaged over the 30 resamples for each model, with and without pca. Paired t-testing was used to calculate the p-values. Based on the p-values, pca resulted in a significant decrease in accuracy for the ```svmRadial``` and ```Rborist``` models. Effect size (calculated manually) for ```svmRadial```  was large at `r svm_cohend` and effect size for ```Rborist``` was small at `r Rbor_cohend`. Accuracies obtained by the other models were not significantly affected by principal component analysis.
+
+A potential flaw in the p-value calculations is the inherent assumption with t-tests that the data are normally distributed. Normality of the data was not evaluated in this analysis beyond visual inspection of ```qqplots``` (not shown here). On the other hand, the Central Limit Theorem tells us that the sampling distribution will approach normality with a large enough sample size, and it is generally accepted that 30 or more samples is adequate to meet this criterion. 
+&nbsp;  
+&nbsp;  
+
+```{r}
+# print table
+knitr::kable(res_combined_kable, align = c('l', rep('c',5)), col.names = col_names)
+```
+
+\begin{center} `r tabls("avg-accs")` \end{center}
+&nbsp;  
+
+### Ensembles
+
+`r tabls("ensemble", display = "cite")` compares the accuracies obtained by ensembling. Two ensembles were created, one for the models trained without principal component analysis and one for the models trained with principal component analysis. Results obtained for both the training data and the test data are presented.  
+&nbsp;  
+&nbsp;
+
+```{r}
+# create an ensemble of the models using the caretEnsemble function 
+stackControl <- trainControl(method="repeatedcv", number=30, repeats=3, savePredictions=TRUE, classProbs=TRUE)
+set.seed(2019)
+ensemble <- caretEnsemble(models, metric="Accuracy", preProcess = c('center','scale'), 
+                            trControl=stackControl)
+# use the ensemble to predict diagnoses for the test_set
+pred <- predict(ensemble, newdata = test_set[ ,3:32])
+# check accuracy of test_set predictions
+cm <- confusionMatrix(pred, test_set$diagnosis)
+
+# create an ensemble of the models that were trained using pca 
+ensemble_pca <- caretEnsemble(models_pca, metric="Accuracy", preProcess = c('center','scale'), 
+                          trControl=stackControl)
+# use the ensemble to predict diagnoses for the test_set
+pred_pca <- predict(ensemble_pca, newdata = test_set[ ,3:32])
+# check accuracy of test_set predictions
+cm_pca <- confusionMatrix(pred_pca, test_set$diagnosis)
+
+# create a table to compare results
+# create and print table of ensemble accuracy results, with and without pca
+ens_acc_train <- round(ensemble$error$Accuracy, digits = 4) # accuracy for train set, no pca
+ens_acc_test <- round(cm$overall[[1]], digits = 4) # accuracy for test set, no pca
+ens_pca_acc_train <- round(ensemble_pca$error$Accuracy, digits = 4) # accuracy for train set, with pca
+ens_pca_acc_test <- round(cm_pca$overall[[1]], digits = 4) # accuracy for test set, with pca
+# creat matrix of accuracy results
+ens_res <- matrix(c(ens_acc_train,ens_acc_test,ens_pca_acc_train,ens_pca_acc_test), ncol = 2)
+colnames(ens_res) <- c("no pca", "pca")
+rownames(ens_res) <- c("accuracy-train","accuracy-test")
+# print table
+knitr::kable(as.table(ens_res), align = c("c", "c"))
+```
+
+\begin{center} `r tabls("ensemble")` \end{center}
+&nbsp;  
+
+Principal component analysis did not appear to affect the results obtained using the training data but there was a decrease in performance with the test data. Formal testing of the significance of this decrease is beyond the scope of this work; however, there is strong overlap of the 95% confidence intervals: `r round(cm$overall[[3]], digits = 4)` to `r round(cm$overall[[4]], digits = 4)` for the models trained without pca and `r round(cm_pca$overall[[3]], digits = 4)` to `r round(cm_pca$overall[[4]], digits = 4)` for the models trained with pca.  This suggests that the difference is probably not signficant.
+
+When attempting to detect cancer, emphasis is placed on minimizing the number of false negatives, even at the expense of increased false positives (better to call a benign lesion malignant than vice versa). Predicting from the test data, sensitivity for both ensembles (i.e., using the models trained with and without pca) was 100%, indicating that all malignant lesions were detected.  The no-pca ensemble produced `r cm$table[1,2]` false positives while the pca ensemble produced `r cm_pca$table[1,2]` false positives, reflective of the lower accuracy seen with the pca ensemble. 
+
+Was ensembling beneficial? `r tabls("accs-mods+ens", display = "cite")` is a modification of `r tabls("avg-accs", display = "cite")` showing the average accuracy obtained for each model along with the accuracy obtained for the corresponding ensemble. For each case, either with or without pca, the ensemble does appear to perform better than any of the component models alone. 
+&nbsp;  
+&nbsp; 
+
+```{r}
+# create and print table of individual model accuracies plus ensemble accuracy
+res_avg <- data.frame(round(colMeans(res), digits = 4)) # accuracy for each model = average of resamples
+# add ensemble accuracy
+res_avg <- rbind(res_avg, "ensemble" = round(ensemble$error$Accuracy, digits = 4)) 
+res_avg_pca <- data.frame(round(colMeans(res_pca), digits = 4)) # avg accuracy for models with pca
+# add ensemble accuracy
+res_avg_pca <- rbind(res_avg_pca, "ensemble" = round(ensemble_pca$error$Accuracy, digits = 4)) 
+# combine res_avg and res_avg_pca
+res_avg_combined <- cbind(res_avg, res_avg_pca)
+# print table using the kable function
+knitr::kable(res_avg_combined, col.names = c("accuracy-no pca", "accuracy-pca"), align = c("c","c"))
+```
+
+\begin{center} `r tabls("accs-mods+ens")` \end{center}
+&nbsp;  
+
+## Conclusions
+
+The caretEnsemble package is a powerful tool for simultaneously training a group of models on the same data set and it also provides functions for creating ensembles of the models. For this project, the ```caretList``` function was used to train a list of six models: ```lda```, ```rpart```, ```knn```, ```svmRadial```, ```Rborist```, and ```nnet``` using the Wisconsin Diagnostic Breast Cancer data set. Two ensembles were created, one for the models trained without pca and one for the models trained with pca.  In both cases, the ensemble performed better than any of the six models individually. 
+
+For the ensemble created from models that were trained without pca, accuracy of `r ens_acc_train` was obtained using the training data and accuracy of `r ens_acc_test` was obtained using the test data. These results approach or exceed those reported by previous authors.[2][1][5] 
+
+Principal component analysis resulted in a significant decrease in peformance of two of the models, ```svmRadial``` and ```Rborist``` and the calculated effect size was large for the ```svmRadial``` model. Performance of the other models was not significantly affected by pca. For the ensembles, principal component analysis did not appear to affect the results obtained using the training data but there was a decrease in performance with the test data. The significance of this decrease was not formally evaluated so the question remains as to whether the potential advantages of pca such as decreased complexity and decreased risk of overfitting can be achieved without compromising accuracy.
+
+## References
+
+1. Akay, Mehmet Fatih. 2009. “Support Vector Machines Combined with Feature Selection for Breast Cancer Diagnosis.” Expert Systems with Applications 36(2). Elsevier: 3240–7.
+
+2. Borges, Lucas Rodrigues. 1989. “Analysis of the Wisconsin Breast Cancer Dataset and Machine Learning for Breast Cancer Detection.” Proceedings of XI Workshop de Visão Computacional ‐ October 05th‐07th, 2015 Group1(369).
+
+3. DeSantis, Carol E, Jiemin Ma, Ann Goding Sauer, Lisa A Newman, and Ahmedin Jemal. 2017. “Breast Cancer Statistics, 2017, Racial Disparity in Mortality by State.” CA: A Cancer Journal for Clinicians 67(6). Wiley Online Library: 439–48.
+
+4. Dua, Dheeru, and Casey Graff. 2017. “UCI Machine Learning Repository.” University of California, Irvine, School of Information; Computer Sciences. http://archive.ics.uci.edu/ml.
+
+5. Şahan, Seral, Kemal Polat, Halife Kodaz, and Salih Güneş.  2007.  “A New Hybrid Method Based on Fuzzy-Artificial Immune System and K-NN Algorithm for Breast Cancer Diagnosis.” Computers in Biology and Medicine 37(3). Elsevier: 415–23.
+
